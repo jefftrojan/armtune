@@ -64,8 +64,8 @@ cd armtune
 source .venv/bin/activate
 
 # Download a base (unquantized) GGUF model to quantize from, e.g.:
-huggingface-cli download <org>/<model>-GGUF <model>-f16.gguf \
-  --local-dir models --local-dir-use-symlinks False
+hf download <org>/<model>-GGUF <model>-f16.gguf \
+  --local-dir models
 
 # Run the full sweep
 armtune sweep \

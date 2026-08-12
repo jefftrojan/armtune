@@ -70,9 +70,9 @@ jobs:
         run: |
           source .venv/bin/activate
           mkdir -p models
-          huggingface-cli download "${{ inputs.hf_repo || 'Qwen/Qwen2.5-0.5B-Instruct-GGUF' }}" \
+          hf download "${{ inputs.hf_repo || 'Qwen/Qwen2.5-0.5B-Instruct-GGUF' }}" \
             "${{ inputs.hf_file || 'qwen2.5-0.5b-instruct-fp16.gguf' }}" \
-            --local-dir models --local-dir-use-symlinks False
+            --local-dir models
 
       - name: Run armtune sweep
         run: |
