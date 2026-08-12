@@ -81,7 +81,7 @@ jobs:
             --base-model "models/${{ inputs.hf_file || 'qwen2.5-0.5b-instruct-fp16.gguf' }}" \
             --llama-bin-dir llama.cpp/build/bin \
             --quants Q4_0,Q4_K_M,Q8_0 \
-            --threads 1,2,4 \
+            --threads 1,2,4,6,8 \
             --batch 512,1024 \
             --n-prompt 256 \
             --n-gen 64 \
