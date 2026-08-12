@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+models/
+*.gguf
+results/
+*.egg-info/
+.DS_Store
+llama.cpp/

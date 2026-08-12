@@ -1,0 +1,19 @@
+[project]
+name = "armtune"
+version = "0.1.0"
+description = "Auto-tuning agent for LLM inference serving configs on Arm64 (Graviton/Neoverse) CPUs."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "ArmTune Contributors" }]
+dependencies = []
+
+[project.scripts]
+armtune = "armtune.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["armtune*"]
