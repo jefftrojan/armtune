@@ -21,7 +21,7 @@ The same sweep-and-recommend approach generalizes to on-device Arm CPUs (mobile/
 
 Running `armtune sweep` on an Arm64 target produces, in `results/`:
 
-- `report.md` — human-readable comparison table of every config tested, plus recommended winners (fastest throughput, lowest TTFT, best size/speed trade-off, and best config per quant level).
+- `report.md` — human-readable comparison table of every config tested, recommended winners (fastest throughput, lowest TTFT, best size/speed trade-off, and best config per quant level), and a baseline-vs-tuned comparison against the config an untuned deploy would likely land on (full thread count, least-compressed quant, largest batch tested).
 - `results.csv` — the same data, flat, for spreadsheets or further analysis.
 - `results_raw.json` — raw `llama-bench` output for every test point.
 - `recommended_launch.sh` — a ready-to-run `llama-server` command using the winning config.
@@ -63,13 +63,9 @@ cd armtune
 
 source .venv/bin/activate
 
-# Download a base (unquantized) GGUF model to quantize from, e.g.:
-hf download <org>/<model>-GGUF <model>-f16.gguf \
-  --local-dir models
-
-# Run the full sweep
+# Run the full sweep against any Hugging Face model
 armtune sweep \
-  --base-model models/<model>-f16.gguf \
+  --hf-repo <org>/<model>-GGUF --hf-file <model>-f16.gguf \
   --llama-bin-dir llama.cpp/build/bin \
   --quants Q4_0,Q4_K_M,Q8_0 \
   --batch 512,2048
@@ -77,6 +73,16 @@ armtune sweep \
 # See the results
 cat results/report.md
 ```
+
+### Using your own model
+
+`armtune sweep` accepts a base model three ways:
+
+- `--base-model models/<model>-f16.gguf` — a GGUF file you already have locally.
+- `--hf-repo <org>/<model>-GGUF --hf-file <model>-f16.gguf` — downloads a specific GGUF file from a Hugging Face repo that already publishes one.
+- `--hf-repo <org>/<model>` (no `--hf-file`) — downloads a plain (safetensors) Hugging Face repo and converts it to an f16 GGUF with llama.cpp's own `convert_hf_to_gguf.py`. This needs a llama.cpp *source* checkout (`--llama-src-dir`, default `llama.cpp` — `setup_graviton.sh` clones one) and that script's own Python requirements installed: `pip install -r llama.cpp/requirements.txt`.
+
+Any architecture llama.cpp itself supports works here — ArmTune doesn't hardcode a model list.
 
 ### Try the pipeline without an Arm host first
 
@@ -100,7 +106,7 @@ armtune sweep --mock --quants Q4_0,Q4_K_M,Q8_0 --threads 2,4,8 --batch 512,2048
 armtune/
 ├── .github/workflows/
 │   └── sweep.yml          # Runs the pipeline on free arm64-hosted GitHub Actions runners
-├── armtune/                # CLI package (quantize, bench, report, performix wrapper)
+├── armtune/                # CLI package (quantize, bench, report, hfmodel, performix wrapper)
 ├── scripts/
 │   └── setup_graviton.sh   # Arm64 host bootstrap (deps, llama.cpp build, venv)
 ├── examples/

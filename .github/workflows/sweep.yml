@@ -13,7 +13,12 @@ on:
         default: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
         required: false
       hf_file:
-        description: "GGUF filename within that repo"
+        description: >-
+          GGUF filename within that repo. Must be a repo that already
+          publishes GGUF files -- converting a plain safetensors repo
+          (armtune sweep --hf-repo with no --hf-file) needs llama.cpp's
+          Python conversion deps, which this fast CI workflow doesn't
+          install; do that locally instead.
         default: "qwen2.5-0.5b-instruct-fp16.gguf"
         required: false
   push:
@@ -66,19 +71,12 @@ jobs:
           pip install -e . -q
           pip install huggingface_hub -q
 
-      - name: Download base model
-        run: |
-          source .venv/bin/activate
-          mkdir -p models
-          hf download "${{ inputs.hf_repo || 'Qwen/Qwen2.5-0.5B-Instruct-GGUF' }}" \
-            "${{ inputs.hf_file || 'qwen2.5-0.5b-instruct-fp16.gguf' }}" \
-            --local-dir models
-
       - name: Run armtune sweep
         run: |
           source .venv/bin/activate
           armtune sweep \
-            --base-model "models/${{ inputs.hf_file || 'qwen2.5-0.5b-instruct-fp16.gguf' }}" \
+            --hf-repo "${{ inputs.hf_repo || 'Qwen/Qwen2.5-0.5B-Instruct-GGUF' }}" \
+            --hf-file "${{ inputs.hf_file || 'qwen2.5-0.5b-instruct-fp16.gguf' }}" \
             --llama-bin-dir llama.cpp/build/bin \
             --quants Q4_0,Q4_K_M,Q8_0 \
             --threads 1,2,4,6,8 \
