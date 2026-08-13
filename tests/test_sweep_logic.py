@@ -83,6 +83,30 @@ class TestMergeAndRank(unittest.TestCase):
         for quant in ["Q4_0", "Q4_K_M", "Q8_0"]:
             self.assertIn(f"best_{quant}", winners)
 
+    def test_model_path_propagated_from_bench_rows(self):
+        results = report.merge_rows(self.rows)
+        for r in results:
+            self.assertEqual(r.model_path, f"mock/{r.quant}.gguf")
+
+    def test_baseline_is_least_compressed_quant_at_max_threads_and_batch(self):
+        results = report.merge_rows(self.rows)
+        baseline = report.pick_baseline(results)
+        # Q8_0 has the largest on-disk size in _QUANT_PROFILE, and the sweep
+        # covers threads=[2,4,8] / batch=[512,2048], so baseline should be
+        # Q8_0 @ 8 threads, batch 2048.
+        self.assertEqual(baseline.quant, "Q8_0")
+        self.assertEqual(baseline.threads, 8)
+        self.assertEqual(baseline.batch, 2048)
+
+    def test_winners_include_baseline(self):
+        results = report.merge_rows(self.rows)
+        winners = report.pick_winners(results)
+        self.assertIn("baseline", winners)
+        fastest = winners["fastest_throughput"]
+        baseline = winners["baseline"]
+        # The tuned winner should never be slower than the untuned baseline.
+        self.assertGreaterEqual(fastest.tg_tokens_per_s, baseline.tg_tokens_per_s)
+
     def test_write_artifacts_creates_expected_files(self):
         import tempfile
         results = report.merge_rows(self.rows)
@@ -93,7 +117,14 @@ class TestMergeAndRank(unittest.TestCase):
             )
             for key in ("raw_json", "csv", "markdown", "launch_script"):
                 self.assertTrue(paths[key].exists(), f"missing artifact: {key}")
-            self.assertIn("SYNTHETIC DEMO DATA", paths["markdown"].read_text())
+            md = paths["markdown"].read_text()
+            self.assertIn("SYNTHETIC DEMO DATA", md)
+            self.assertIn("Baseline vs. tuned", md)
+
+            winner = winners["fastest_throughput"]
+            launch = paths["launch_script"].read_text()
+            self.assertIn(winner.model_path, launch)
+            self.assertNotIn("<your-model>", launch)
 
 
 if __name__ == "__main__":
