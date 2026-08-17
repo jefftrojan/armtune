@@ -34,7 +34,11 @@ Example (synthetic, generated with `--mock` for illustration — see [`examples/
 | Q4_K_M | 8 | 512 | 1838.4 | 1576.3 | 47.6 |
 | Q8_0 | 8 | 512 | 3255.4 | 2045.7 | 28.0 |
 
-Optional: pass `--performix` to have ArmTune attempt to wrap the winning config's run with Arm Performix's `apx` CLI (if installed) for hardware-performance-counter profiling on top of llama-bench's own timing. For full top-down analysis, running Arm Performix's GUI or `apx` from a separate host against the target over SSH (per [Arm's install guide](https://learn.arm.com/install-guides/performix/)) is the more complete path — ArmTune's built-in hook is a convenience, not a replacement for it.
+Optional flags:
+
+- `--performix` wraps the winning config's `llama-bench` run with Arm Performix's `apx` CLI (if installed) for hardware-performance-counter profiling on top of llama-bench's own timing. For full top-down analysis, running Arm Performix's GUI or `apx` from a separate host against the target over SSH (per [Arm's install guide](https://learn.arm.com/install-guides/performix/)) is the more complete path — ArmTune's built-in hook is a convenience, not a replacement for it.
+- `--instance-cost-per-hour 0.0672` adds a $/1M generated tokens column to the baseline-vs-tuned comparison, using your instance's on-demand hourly price (generation-only; ignores prompt-processing time).
+- `--concurrency 1,4,8` measures aggregate serving throughput for the winning config under concurrent load: launches `llama-server` once and fires N simultaneous `/completion` requests at each level, appending a "Concurrent serving throughput" section to `report.md` and a `concurrency_raw.json`. `llama-bench` (the main sweep) only ever tests one request stream at a time, which understates how batch size matters for a real multi-request serving workload — this fills that gap for the single config that won the sweep, rather than re-running the full grid.
 
 ## Setup instructions
 
@@ -106,7 +110,7 @@ armtune sweep --mock --quants Q4_0,Q4_K_M,Q8_0 --threads 2,4,8 --batch 512,2048
 armtune/
 ├── .github/workflows/
 │   └── sweep.yml          # Runs the pipeline on free arm64-hosted GitHub Actions runners
-├── armtune/                # CLI package (quantize, bench, report, hfmodel, performix wrapper)
+├── armtune/                # CLI package (quantize, bench, report, hfmodel, serve, performix wrapper)
 ├── scripts/
 │   └── setup_graviton.sh   # Arm64 host bootstrap (deps, llama.cpp build, venv)
 ├── examples/

@@ -102,6 +102,50 @@ def pick_winners(results: list[ConfigResult]) -> dict[str, ConfigResult]:
     }
 
 
+def render_concurrency_section(results: list[dict]) -> str:
+    lines = ["\n## Concurrent serving throughput\n"]
+    lines.append(
+        "Measured against the winning config only, via `llama-server` fielding "
+        "N simultaneous `/completion` requests -- the full sweep above (`llama-bench`) "
+        "only ever measures one request stream at a time, which isn't representative "
+        "of real serving load.\n"
+    )
+    if any(r.get("armtune_mock") for r in results):
+        lines.append("> **SYNTHETIC DEMO DATA** (`--mock`). Not a real concurrency measurement.\n")
+    lines.append("| concurrency | aggregate tok/s | per-request tok/s |")
+    lines.append("|---:|---:|---:|")
+    for r in results:
+        if "error" in r:
+            lines.append(f"| {r['concurrency']} | error: {r['error']} | |")
+        else:
+            lines.append(f"| {r['concurrency']} | {r['aggregate_tok_s']} | {r['per_request_tok_s']} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def append_concurrency(out_dir: Path, results: list[dict]) -> Path:
+    """Writes concurrency_raw.json and appends a section to the already-written
+    report.md. Kept separate from write_artifacts because it's an optional,
+    single-config add-on step that runs (if requested) after the main sweep."""
+    raw_path = out_dir / "concurrency_raw.json"
+    raw_path.write_text(json.dumps(results, indent=2))
+
+    md_path = out_dir / "report.md"
+    with md_path.open("a") as f:
+        f.write(render_concurrency_section(results))
+    return raw_path
+
+
+def cost_per_1m_tokens(tg_tokens_per_s: float, cost_per_hour: float) -> float:
+    """$ per 1M generated tokens, from measured throughput and an hourly
+    on-demand instance price. Generation-only: ignores prompt-processing
+    time, which is usually the smaller share of serving cost."""
+    if tg_tokens_per_s <= 0:
+        return float("inf")
+    tokens_per_hour = tg_tokens_per_s * 3600
+    return cost_per_hour / tokens_per_hour * 1_000_000
+
+
 def write_artifacts(
     raw_rows: list[dict],
     results: list[ConfigResult],
@@ -109,6 +153,7 @@ def write_artifacts(
     out_dir: Path,
     model_label: str,
     cpu_label: str,
+    cost_per_hour: float | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
@@ -126,7 +171,7 @@ def write_artifacts(
     paths["csv"] = csv_path
 
     md_path = out_dir / "report.md"
-    md_path.write_text(_render_markdown(results, winners, model_label, cpu_label))
+    md_path.write_text(_render_markdown(results, winners, model_label, cpu_label, cost_per_hour))
     paths["markdown"] = md_path
 
     winner = winners["fastest_throughput"]
@@ -150,6 +195,7 @@ def _render_markdown(
     winners: dict[str, ConfigResult],
     model_label: str,
     cpu_label: str,
+    cost_per_hour: float | None = None,
 ) -> str:
     is_mock = any(r.mock for r in results)
     lines = []
@@ -191,16 +237,30 @@ def _render_markdown(
         f"least-compressed quant tested (`{b.quant}`), all {b.threads} threads, "
         f"batch {b.batch}.\n"
     )
-    lines.append("| | quant | threads | batch | size (MiB) | TTFT (ms) | gen t/s |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|")
-    lines.append(
-        f"| Baseline | {b.quant} | {b.threads} | {b.batch} | "
-        f"{b.model_size_mib} | {b.ttft_ms} | {b.tg_tokens_per_s} |"
-    )
-    lines.append(
-        f"| **Tuned (fastest)** | {w.quant} | {w.threads} | {w.batch} | "
-        f"{w.model_size_mib} | {w.ttft_ms} | {w.tg_tokens_per_s} |"
-    )
+    if cost_per_hour:
+        lines.append("| | quant | threads | batch | size (MiB) | TTFT (ms) | gen t/s | $/1M tok |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+        b_cost = cost_per_1m_tokens(b.tg_tokens_per_s, cost_per_hour)
+        w_cost = cost_per_1m_tokens(w.tg_tokens_per_s, cost_per_hour)
+        lines.append(
+            f"| Baseline | {b.quant} | {b.threads} | {b.batch} | "
+            f"{b.model_size_mib} | {b.ttft_ms} | {b.tg_tokens_per_s} | ${b_cost:.4f} |"
+        )
+        lines.append(
+            f"| **Tuned (fastest)** | {w.quant} | {w.threads} | {w.batch} | "
+            f"{w.model_size_mib} | {w.ttft_ms} | {w.tg_tokens_per_s} | **${w_cost:.4f}** |"
+        )
+    else:
+        lines.append("| | quant | threads | batch | size (MiB) | TTFT (ms) | gen t/s |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        lines.append(
+            f"| Baseline | {b.quant} | {b.threads} | {b.batch} | "
+            f"{b.model_size_mib} | {b.ttft_ms} | {b.tg_tokens_per_s} |"
+        )
+        lines.append(
+            f"| **Tuned (fastest)** | {w.quant} | {w.threads} | {w.batch} | "
+            f"{w.model_size_mib} | {w.ttft_ms} | {w.tg_tokens_per_s} |"
+        )
     lines.append("")
     if (b.quant, b.threads, b.batch) == (w.quant, w.threads, w.batch):
         lines.append("Baseline and the fastest measured config are the same — no tuning gain to report for this sweep.\n")
@@ -208,9 +268,20 @@ def _render_markdown(
         speedup_pct = (w.tg_tokens_per_s - b.tg_tokens_per_s) / b.tg_tokens_per_s * 100 if b.tg_tokens_per_s else 0.0
         ttft_delta_pct = (b.ttft_ms - w.ttft_ms) / b.ttft_ms * 100 if b.ttft_ms else 0.0
         size_delta_pct = (b.model_size_mib - w.model_size_mib) / b.model_size_mib * 100 if b.model_size_mib else 0.0
+        cost_note = ""
+        if cost_per_hour:
+            b_cost = cost_per_1m_tokens(b.tg_tokens_per_s, cost_per_hour)
+            w_cost = cost_per_1m_tokens(w.tg_tokens_per_s, cost_per_hour)
+            cost_savings_pct = (b_cost - w_cost) / b_cost * 100 if b_cost else 0.0
+            cost_note = (
+                f" At ${cost_per_hour:.4g}/hr for this instance, that's "
+                f"${b_cost:.4f} → ${w_cost:.4f} per 1M generated tokens "
+                f"({cost_savings_pct:.1f}% cheaper)."
+            )
         lines.append(
             f"**Tuning is {speedup_pct:.1f}% faster (generation throughput)** than the "
-            f"untuned baseline above — {ttft_delta_pct:+.1f}% TTFT, {size_delta_pct:+.1f}% on-disk size.\n"
+            f"untuned baseline above — {ttft_delta_pct:+.1f}% TTFT, {size_delta_pct:+.1f}% on-disk size."
+            f"{cost_note}\n"
         )
 
     lines.append("## Full sweep (sorted by generation throughput)\n")

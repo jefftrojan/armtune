@@ -15,7 +15,7 @@ import platform
 import sys
 from pathlib import Path
 
-from . import __version__, bench, hfmodel, performix, quantize, report
+from . import __version__, bench, hfmodel, performix, quantize, report, serve
 
 DEFAULT_QUANTS = ["Q4_0", "Q4_K_M", "Q8_0"]
 
@@ -78,6 +78,19 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--model-cache", type=Path, default=Path("models"), help="Where quantized .gguf files are cached.")
     sweep.add_argument("--out-dir", type=Path, default=Path("results"), help="Where reports are written.")
     sweep.add_argument("--performix", action="store_true", help="Best-effort: profile the winning config with `apx` if installed.")
+    sweep.add_argument(
+        "--instance-cost-per-hour", type=float, default=None,
+        help="On-demand $/hr for this instance type (e.g. current Graviton/Cobalt/Axion "
+             "pricing). If given, the report includes $/1M generated tokens for the "
+             "baseline and tuned configs.",
+    )
+    sweep.add_argument(
+        "--concurrency", type=str, default=None,
+        help="Comma-separated concurrent-request counts to test against the winning "
+             "config via llama-server (e.g. 1,4,8). llama-bench above only measures "
+             "one request stream at a time; this shows how the winner holds up under "
+             "concurrent load. Off by default (adds a llama-server start/stop cycle).",
+    )
     sweep.add_argument(
         "--mock", action="store_true",
         help="Generate synthetic benchmark data instead of running llama.cpp. "
@@ -156,14 +169,44 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         print("error: no complete pp+tg result pairs were produced", file=sys.stderr)
         return 1
     winners = report.pick_winners(results)
-    paths = report.write_artifacts(rows, results, winners, args.out_dir, model_label, cpu_label)
+    paths = report.write_artifacts(
+        rows, results, winners, args.out_dir, model_label, cpu_label,
+        cost_per_hour=args.instance_cost_per_hour,
+    )
 
     if args.performix:
-        status = performix.try_profile_winner(
-            cmd=["echo", "(configure a representative llama-bench/llama-cli command here)"],
-            out_dir=args.out_dir,
-        )
-        print(f"[armtune] performix: {status}")
+        if args.mock:
+            print("[armtune] performix: skipped (no real binary/hardware under --mock)")
+        else:
+            winner = winners["fastest_throughput"]
+            profile_cmd = [
+                str(bench_bin), "-m", winner.model_path,
+                "-t", str(winner.threads), "-b", str(winner.batch),
+                "-p", str(args.n_prompt), "-n", str(args.n_gen), "-r", "1",
+            ]
+            status = performix.try_profile_winner(cmd=profile_cmd, out_dir=args.out_dir)
+            print(f"[armtune] performix: {status}")
+
+    if args.concurrency:
+        levels = [int(c) for c in args.concurrency.split(",") if c.strip()]
+        winner = winners["fastest_throughput"]
+        print(f"[armtune] measuring concurrent serving throughput at {levels} for the winning config")
+        conc_results = None
+        if args.mock:
+            conc_results = serve.generate_mock_concurrency(levels, winner.tg_tokens_per_s)
+        else:
+            try:
+                server_bin = quantize.find_binary(args.llama_bin_dir, "llama-server")
+                conc_results = serve.bench_concurrency(
+                    server_bin=server_bin, model_path=winner.model_path,
+                    threads=winner.threads, batch=winner.batch,
+                    concurrency_levels=levels, n_predict=args.n_gen,
+                )
+            except (quantize.QuantizeError, serve.ServeError) as e:
+                print(f"[armtune] concurrency benchmark skipped: {e}", file=sys.stderr)
+        if conc_results:
+            report.append_concurrency(args.out_dir, conc_results)
+            print(f"[armtune] concurrency results appended to {paths['markdown']}")
 
     w = winners["fastest_throughput"]
     b = winners["baseline"]
