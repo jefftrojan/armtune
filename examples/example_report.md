@@ -1,9 +1,8 @@
-> This is a real sample report from an actual run of the [GitHub Actions
-> workflow](../.github/workflows/sweep.yml) (`armtune sweep`, no `--mock`)
-> against `Qwen/Qwen2.5-0.5B-Instruct-GGUF` on a real arm64-hosted GitHub
-> Actions runner (Azure Cobalt 100, Neoverse-based, `aarch64`). Numbers will
-> vary by model, instance type, and thread range swept — see the setup
-> instructions in the main README to reproduce on your own target.
+> This is a real sample report from an actual run of `armtune sweep`
+> (no `--mock`) against `Qwen/Qwen2.5-0.5B-Instruct-GGUF` on real Arm64
+> server hardware (Azure Cobalt 100, Neoverse-based, `aarch64`). Numbers
+> will vary by model, instance type, and thread range swept — see the
+> setup instructions in the main README to reproduce on your own target.
 
 # ArmTune sweep report
 

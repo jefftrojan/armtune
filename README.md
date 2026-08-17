@@ -42,19 +42,9 @@ Optional flags:
 
 ## Setup instructions
 
-### Option A: no account needed — GitHub Actions (real Arm64 server CPU)
+### Run it on an Arm64 instance (Graviton / Cobalt / Axion)
 
-This repo ships a workflow ([`.github/workflows/sweep.yml`](.github/workflows/sweep.yml)) that runs the entire pipeline on GitHub's free **arm64-hosted runner** (`ubuntu-24.04-arm`), which runs on real Azure Cobalt 100 (Neoverse-based) server silicon — no cloud account, no credit card, just a public GitHub repo.
-
-1. Push this repo to GitHub (public, with the MIT license visible).
-2. Go to the **Actions** tab → **ArmTune sweep (arm64)** → **Run workflow** (or just push to `main` — it runs automatically).
-3. When it finishes (~10-15 min, mostly the one-time llama.cpp build), open the run: the ranked report is in the **job summary**, and the full `results/` folder (JSON/CSV/report.md) is attached as a downloadable **build artifact**.
-
-This is also the easiest way for anyone to verify the optimization actually runs on Arm — they can re-run the workflow themselves from the Actions tab.
-
-### Option B: your own Arm64 instance (Graviton / Cobalt / Axion)
-
-For larger models or more thorough sweeps than CI minutes comfortably allow. Requires an Arm64 Linux host (tested against AWS Graviton-class instances, Ubuntu 22.04/24.04, 4+ cores, 8GB+ RAM for a ~3-8B model).
+Requires an Arm64 Linux host (tested against AWS Graviton-class instances, Ubuntu 22.04/24.04, 4+ cores, 8GB+ RAM for a ~3-8B model).
 
 ```bash
 git clone <this-repo-url> armtune
@@ -102,14 +92,12 @@ armtune sweep --mock --quants Q4_0,Q4_K_M,Q8_0 --threads 2,4,8 --batch 512,2048
 - **Arm-specific optimization**: builds llama.cpp with `-mcpu=native` to engage Arm's contributed Neon/SVE/MATMUL_INT8 GEMV/GEMM kernels for Q4_0-family and Q8_0 quantization on Graviton2/3/4-class CPUs.
 - **Model size**: reports on-disk size per quantization level so the size/speed trade-off is explicit, not guessed.
 - **Model speed / inference server speed**: measures and ranks generation throughput (tok/s) and time-to-first-token across the full config sweep.
-- **Developer experience**: turns a manual, error-prone benchmarking chore into a single command with a decision-ready report and launch script — and a one-click, no-account-needed CI workflow anyone can re-run to verify the numbers on real Arm64 server silicon.
+- **Developer experience**: turns a manual, error-prone benchmarking chore into a single command with a decision-ready report and a ready-to-run launch script for the winning config.
 
 ## Repository layout
 
 ```
 armtune/
-├── .github/workflows/
-│   └── sweep.yml          # Runs the pipeline on free arm64-hosted GitHub Actions runners
 ├── armtune/                # CLI package (quantize, bench, report, hfmodel, serve, performix wrapper)
 ├── scripts/
 │   └── setup_graviton.sh   # Arm64 host bootstrap (deps, llama.cpp build, venv)
