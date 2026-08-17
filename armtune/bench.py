@@ -12,7 +12,10 @@ import json
 import platform
 import random
 import subprocess
+import sys
+import threading
 from pathlib import Path
+from typing import Callable
 
 
 class BenchError(RuntimeError):
@@ -27,16 +30,28 @@ def run_llama_bench(
     n_prompt: int,
     n_gen: int,
     repetitions: int = 3,
+    on_quant_start: Callable[[str], None] | None = None,
+    on_quant_done: Callable[[str], None] | None = None,
+    on_progress_line: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """Run llama-bench across every quantized model and every thread/batch combo.
 
     Runs one llama-bench invocation per model so results stay clearly
     attributed to a quant type even if llama-bench's own model-type string
-    is ambiguous, and prints progress as it goes (a sweep can take a while).
+    is ambiguous.
+
+    llama-bench prints its own --progress lines to stderr (stdout stays pure
+    JSON for -o json) as each test point completes -- we stream the process
+    instead of blocking on subprocess.run so those lines are visible in real
+    time, both on our own stderr and via on_progress_line for callers like
+    the --serve live dashboard.
     """
     all_rows: list[dict] = []
 
     for quant, model_path in model_paths.items():
+        if on_quant_start:
+            on_quant_start(quant)
+
         cmd = [
             str(bench_bin),
             "-m", str(model_path),
@@ -49,23 +64,41 @@ def run_llama_bench(
             "--progress",
         ]
         print(f"[armtune] benchmarking {quant}: {' '.join(cmd)}")
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+
+        def _drain_stderr(p: subprocess.Popen = proc) -> None:
+            for line in p.stderr:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                print(line, file=sys.stderr)
+                if on_progress_line:
+                    on_progress_line(line)
+            p.stderr.close()
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+        stdout_data = proc.stdout.read()
+        proc.stdout.close()
+        proc.wait()
+        stderr_thread.join(timeout=5)
+
         if proc.returncode != 0:
-            raise BenchError(
-                f"llama-bench failed for {quant}:\n"
-                f"cmd: {' '.join(cmd)}\nstderr: {proc.stderr}"
-            )
+            raise BenchError(f"llama-bench failed for {quant} (exit {proc.returncode})")
         try:
-            rows = json.loads(proc.stdout)
+            rows = json.loads(stdout_data)
         except json.JSONDecodeError as e:
             raise BenchError(
                 f"Could not parse llama-bench JSON output for {quant}: {e}\n"
-                f"stdout was:\n{proc.stdout}"
+                f"stdout was:\n{stdout_data}"
             ) from e
 
         for row in rows:
             row["armtune_quant"] = quant
         all_rows.extend(rows)
+        if on_quant_done:
+            on_quant_done(quant)
 
     return all_rows
 

@@ -13,9 +13,13 @@ import argparse
 import os
 import platform
 import sys
+import time
+import webbrowser
 from pathlib import Path
 
 from . import __version__, bench, hfmodel, performix, quantize, report, serve
+from .livestate import SweepState
+from .liveserver import LiveServer
 
 DEFAULT_QUANTS = ["Q4_0", "Q4_K_M", "Q8_0"]
 
@@ -97,6 +101,14 @@ def build_parser() -> argparse.ArgumentParser:
              "For testing the armtune pipeline itself on machines without a "
              "built llama.cpp / Arm hardware. NOT valid as real performance results.",
     )
+    sweep.add_argument(
+        "--serve", action="store_true",
+        help="Start a local live-progress dashboard (http://127.0.0.1:<port>) while "
+             "the sweep runs, which becomes the full chartable report when it finishes. "
+             "Stays running after completion until Ctrl-C.",
+    )
+    sweep.add_argument("--port", type=int, default=8877, help="Port for --serve's dashboard (default: 8877).")
+    sweep.add_argument("--no-open", action="store_true", help="With --serve, don't auto-open the dashboard in a browser.")
 
     sub.add_parser("version", help="Print the armtune version.")
     return p
@@ -112,6 +124,20 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     cpu_label = platform.processor() or platform.machine()
     is_arm = platform.machine().lower() in ("aarch64", "arm64")
 
+    state: SweepState | None = None
+    live_server: LiveServer | None = None
+    if args.serve:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        state = SweepState()
+        live_server = LiveServer(state, out_dir=args.out_dir, port=args.port)
+        live_server.start()
+        print(f"[armtune] live dashboard: {live_server.url}")
+        if not args.no_open:
+            try:
+                webbrowser.open(live_server.url)
+            except Exception:
+                pass
+
     if not is_arm and not args.mock:
         print(
             f"[armtune] warning: host arch is '{platform.machine()}', not aarch64/arm64. "
@@ -122,15 +148,22 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     if args.mock:
         print("[armtune] --mock set: generating synthetic demo data, not running llama.cpp.")
+        if state:
+            state.set_total_steps(1)
+            state.set_status("generating_mock", "Generating synthetic demo data...")
         rows = bench.generate_mock_results(
             quant_types=quant_types, threads=threads, batch_sizes=batch_sizes,
             n_prompt=args.n_prompt, n_gen=args.n_gen,
         )
+        if state:
+            state.advance("Synthetic data generated.")
         model_label = "mock-model (synthetic, --mock)"
     else:
         base_model = args.base_model
         if base_model is None and args.hf_repo:
             try:
+                if state:
+                    state.set_status("downloading", f"Downloading {args.hf_repo}...")
                 if args.hf_file:
                     base_model = hfmodel.download_gguf(args.hf_repo, args.hf_file, args.model_cache)
                 else:
@@ -138,37 +171,65 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                         args.hf_repo, args.model_cache, args.llama_src_dir
                     )
             except hfmodel.HFModelError as e:
+                if state:
+                    state.set_error(str(e))
                 print(f"error: {e}", file=sys.stderr)
                 return 2
 
         if base_model is None:
-            print("error: --base-model or --hf-repo is required unless --mock is set", file=sys.stderr)
+            msg = "--base-model or --hf-repo is required unless --mock is set"
+            if state:
+                state.set_error(msg)
+            print(f"error: {msg}", file=sys.stderr)
             return 2
         if not base_model.exists():
-            print(f"error: base model not found: {base_model}", file=sys.stderr)
+            msg = f"base model not found: {base_model}"
+            if state:
+                state.set_error(msg)
+            print(f"error: {msg}", file=sys.stderr)
             return 2
 
         quantize_bin = quantize.find_binary(args.llama_bin_dir, "llama-quantize")
         bench_bin = quantize.find_binary(args.llama_bin_dir, "llama-bench")
 
-        print(f"[armtune] quantizing {base_model} -> {quant_types}")
-        quantized = quantize.ensure_quantized(
-            base_model, quant_types, args.model_cache, quantize_bin
-        )
+        if state:
+            state.set_total_steps(len(quant_types) * 2)  # quantize + bench, per quant
+            state.set_status("quantizing", f"Quantizing to {', '.join(quant_types)}...")
 
-        print(f"[armtune] sweeping threads={threads} batch={batch_sizes} on {len(quantized)} quant variants")
-        rows = bench.run_llama_bench(
-            bench_bin=bench_bin, model_paths=quantized, threads=threads,
-            batch_sizes=batch_sizes, n_prompt=args.n_prompt, n_gen=args.n_gen,
-            repetitions=args.repetitions,
-        )
+        print(f"[armtune] quantizing {base_model} -> {quant_types}")
+        try:
+            quantized = quantize.ensure_quantized(
+                base_model, quant_types, args.model_cache, quantize_bin,
+                on_quant_start=(lambda q: state.set_status("quantizing", f"Quantizing {q}...")) if state else None,
+                on_quant_done=(lambda q: state.advance()) if state else None,
+            )
+
+            print(f"[armtune] sweeping threads={threads} batch={batch_sizes} on {len(quantized)} quant variants")
+            rows = bench.run_llama_bench(
+                bench_bin=bench_bin, model_paths=quantized, threads=threads,
+                batch_sizes=batch_sizes, n_prompt=args.n_prompt, n_gen=args.n_gen,
+                repetitions=args.repetitions,
+                on_quant_start=(lambda q: state.set_status("benchmarking", f"Benchmarking {q}...")) if state else None,
+                on_quant_done=(lambda q: state.advance()) if state else None,
+                on_progress_line=state.add_progress_line if state else None,
+            )
+        except (quantize.QuantizeError, bench.BenchError) as e:
+            if state:
+                state.set_error(str(e))
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         model_label = str(base_model)
 
     results = report.merge_rows(rows)
     if not results:
-        print("error: no complete pp+tg result pairs were produced", file=sys.stderr)
+        msg = "no complete pp+tg result pairs were produced"
+        if state:
+            state.set_error(msg)
+        print(f"error: {msg}", file=sys.stderr)
         return 1
     winners = report.pick_winners(results)
+    if state:
+        state.set_status("writing_report", "Writing report...")
     paths = report.write_artifacts(
         rows, results, winners, args.out_dir, model_label, cpu_label,
         cost_per_hour=args.instance_cost_per_hour,
@@ -225,6 +286,18 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     print(f"HTML:    {paths['html']}")
     print(f"CSV:     {paths['csv']}")
     print(f"Launch:  {paths['launch_script']}")
+
+    if state:
+        state.set_status("done", "Sweep complete.")
+    if live_server:
+        print(f"\n[armtune] live dashboard still running at {live_server.url} -- press Ctrl-C to stop.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n[armtune] stopping live server.")
+        finally:
+            live_server.stop()
     return 0
 
 

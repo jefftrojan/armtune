@@ -12,7 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from armtune import bench, htmlreport, report, serve
+from armtune import bench, htmlreport, quantize, report, serve
+from armtune.livestate import SweepState
+from armtune.liveserver import LiveServer
 
 
 class TestMockGeneration(unittest.TestCase):
@@ -245,6 +247,192 @@ class TestCostPerToken(unittest.TestCase):
         # -> $2.7778 per 1M tokens.
         cost = report.cost_per_1m_tokens(tg_tokens_per_s=100.0, cost_per_hour=1.0)
         self.assertAlmostEqual(cost, 1_000_000 / (100.0 * 3600), places=6)
+
+
+class TestSweepState(unittest.TestCase):
+    def test_set_status_updates_status_and_message(self):
+        s = SweepState()
+        s.set_status("quantizing", "Quantizing Q4_0...")
+        d = s.to_dict()
+        self.assertEqual(d["status"], "quantizing")
+        self.assertEqual(d["message"], "Quantizing Q4_0...")
+
+    def test_advance_increments_steps_done(self):
+        s = SweepState()
+        s.set_total_steps(4)
+        s.advance()
+        s.advance("halfway")
+        d = s.to_dict()
+        self.assertEqual(d["steps_done"], 2)
+        self.assertEqual(d["total_steps"], 4)
+        self.assertEqual(d["message"], "halfway")
+
+    def test_progress_lines_capped(self):
+        s = SweepState()
+        for i in range(100):
+            s.add_progress_line(f"line {i}")
+        d = s.to_dict()
+        self.assertEqual(len(d["progress_lines"]), 60)
+        self.assertEqual(d["progress_lines"][-1], "line 99")
+
+    def test_set_error_sets_status_error(self):
+        s = SweepState()
+        s.set_error("something broke")
+        d = s.to_dict()
+        self.assertEqual(d["status"], "error")
+        self.assertEqual(d["error"], "something broke")
+
+    def test_to_dict_has_expected_keys(self):
+        d = SweepState().to_dict()
+        for key in ("status", "message", "progress_lines", "total_steps", "steps_done", "error", "updated_at"):
+            self.assertIn(key, d)
+
+
+class TestLiveServer(unittest.TestCase):
+    def test_serves_state_report_and_404s_missing_files(self):
+        import json
+        import tempfile
+        import urllib.error
+        import urllib.request
+
+        state = SweepState()
+        state.set_total_steps(3)
+        state.advance("Quantizing Q4_0...")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            server = LiveServer(state, out_dir=out_dir, port=0)
+            server.start()
+            try:
+                base = server.url
+
+                with urllib.request.urlopen(base) as r:
+                    self.assertEqual(r.status, 200)
+                    self.assertIn(b"<html", r.read())
+
+                with urllib.request.urlopen(base + "state.json") as r:
+                    body = json.loads(r.read())
+                    self.assertEqual(body["steps_done"], 1)
+                    self.assertEqual(body["total_steps"], 3)
+
+                # report.html doesn't exist yet -> 404
+                try:
+                    urllib.request.urlopen(base + "report.html")
+                    self.fail("expected HTTPError for missing report.html")
+                except urllib.error.HTTPError as e:
+                    self.assertEqual(e.code, 404)
+
+                # write it, now it should serve
+                (out_dir / "report.html").write_text("<html>final report</html>")
+                with urllib.request.urlopen(base + "report.html") as r:
+                    self.assertEqual(r.status, 200)
+                    self.assertIn(b"final report", r.read())
+            finally:
+                server.stop()
+
+
+class TestQuantizeCallbacks(unittest.TestCase):
+    def _fake_binary(self, tmp: Path, exit_code: int = 0) -> Path:
+        script = tmp / "fake-llama-quantize"
+        script.write_text(
+            "#!/bin/sh\n"
+            f"touch \"$2\"\n"
+            f"exit {exit_code}\n"
+        )
+        script.chmod(0o755)
+        return script
+
+    def test_start_and_done_callbacks_fire_per_quant_in_order(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            base_model = tmp_path / "model.gguf"
+            base_model.write_text("fake")
+            quantize_bin = self._fake_binary(tmp_path)
+            cache_dir = tmp_path / "models"
+
+            events = []
+            out = quantize.ensure_quantized(
+                base_model, ["Q4_0", "Q8_0"], cache_dir, quantize_bin,
+                on_quant_start=lambda q: events.append(("start", q)),
+                on_quant_done=lambda q: events.append(("done", q)),
+            )
+            self.assertEqual(events, [("start", "Q4_0"), ("done", "Q4_0"), ("start", "Q8_0"), ("done", "Q8_0")])
+            self.assertEqual(set(out.keys()), {"Q4_0", "Q8_0"})
+
+    def test_failure_raises_and_skips_done_callback(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            base_model = tmp_path / "model.gguf"
+            base_model.write_text("fake")
+            quantize_bin = self._fake_binary(tmp_path, exit_code=1)
+            cache_dir = tmp_path / "models"
+
+            events = []
+            with self.assertRaises(quantize.QuantizeError):
+                quantize.ensure_quantized(
+                    base_model, ["Q4_0"], cache_dir, quantize_bin,
+                    on_quant_start=lambda q: events.append(("start", q)),
+                    on_quant_done=lambda q: events.append(("done", q)),
+                )
+            self.assertEqual(events, [("start", "Q4_0")])
+
+
+class TestBenchCallbacksAndStreaming(unittest.TestCase):
+    def _fake_bench_binary(self, tmp: Path, exit_code: int = 0) -> Path:
+        script = tmp / "fake-llama-bench"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys, json\n"
+            "print('progress line 1', file=sys.stderr)\n"
+            "print('progress line 2', file=sys.stderr)\n"
+            "rows = [{'n_prompt': 512, 'n_gen': 0, 'n_threads': 4, 'n_batch': 512,\n"
+            "         'model_filename': 'm.gguf', 'model_size': 100, 'model_n_params': 1,\n"
+            "         'avg_ns': 1000000000, 'stddev_ns': 0, 'avg_ts': 512.0, 'stddev_ts': 0},\n"
+            "        {'n_prompt': 0, 'n_gen': 128, 'n_threads': 4, 'n_batch': 512,\n"
+            "         'model_filename': 'm.gguf', 'model_size': 100, 'model_n_params': 1,\n"
+            "         'avg_ns': 1000000000, 'stddev_ns': 0, 'avg_ts': 30.0, 'stddev_ts': 0}]\n"
+            "print(json.dumps(rows))\n"
+            f"sys.exit({exit_code})\n"
+        )
+        script.chmod(0o755)
+        return script
+
+    def test_streams_progress_and_tags_rows_with_quant(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bench_bin = self._fake_bench_binary(tmp_path)
+
+            progress_lines = []
+            quant_events = []
+            rows = bench.run_llama_bench(
+                bench_bin=bench_bin, model_paths={"Q4_0": tmp_path / "m.gguf"},
+                threads=[4], batch_sizes=[512], n_prompt=512, n_gen=128,
+                on_quant_start=lambda q: quant_events.append(("start", q)),
+                on_quant_done=lambda q: quant_events.append(("done", q)),
+                on_progress_line=progress_lines.append,
+            )
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r["armtune_quant"] == "Q4_0" for r in rows))
+            self.assertEqual(quant_events, [("start", "Q4_0"), ("done", "Q4_0")])
+            self.assertEqual(progress_lines, ["progress line 1", "progress line 2"])
+
+    def test_nonzero_exit_raises_bench_error(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bench_bin = self._fake_bench_binary(tmp_path, exit_code=1)
+            with self.assertRaises(bench.BenchError):
+                bench.run_llama_bench(
+                    bench_bin=bench_bin, model_paths={"Q4_0": tmp_path / "m.gguf"},
+                    threads=[4], batch_sizes=[512], n_prompt=512, n_gen=128,
+                )
 
 
 if __name__ == "__main__":

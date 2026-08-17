@@ -40,6 +40,7 @@ Optional flags:
 - `--performix` wraps the winning config's `llama-bench` run with Arm Performix's `apx` CLI (if installed) for hardware-performance-counter profiling on top of llama-bench's own timing. For full top-down analysis, running Arm Performix's GUI or `apx` from a separate host against the target over SSH (per [Arm's install guide](https://learn.arm.com/install-guides/performix/)) is the more complete path — ArmTune's built-in hook is a convenience, not a replacement for it.
 - `--instance-cost-per-hour 0.0672` adds a $/1M generated tokens column to the baseline-vs-tuned comparison, using your instance's on-demand hourly price (generation-only; ignores prompt-processing time).
 - `--concurrency 1,4,8` measures aggregate serving throughput for the winning config under concurrent load: launches `llama-server` once and fires N simultaneous `/completion` requests at each level, appending a "Concurrent serving throughput" section to `report.md` and a `concurrency_raw.json`. `llama-bench` (the main sweep) only ever tests one request stream at a time, which understates how batch size matters for a real multi-request serving workload — this fills that gap for the single config that won the sweep, rather than re-running the full grid.
+- `--serve` starts a local live-progress dashboard (`http://127.0.0.1:8877`, auto-opened in your browser) while the sweep runs — showing which quant is being quantized/benchmarked, `llama-bench`'s own progress lines as they happen, and a running step counter — then becomes the full chartable `report.html` the moment the sweep finishes. Stays up afterward so you can browse and export (`--port`/`--no-open` to change the port or skip auto-opening). Standard library only — no new dependency.
 
 ## Setup instructions
 
@@ -99,7 +100,7 @@ armtune sweep --mock --quants Q4_0,Q4_K_M,Q8_0 --threads 2,4,8 --batch 512,2048
 
 ```
 armtune/
-├── armtune/                # CLI package (quantize, bench, report, htmlreport, hfmodel, serve, performix wrapper)
+├── armtune/                # CLI package (quantize, bench, report, htmlreport, hfmodel, serve, liveserver, performix wrapper)
 ├── scripts/
 │   └── setup_graviton.sh   # Arm64 host bootstrap (deps, llama.cpp build, venv)
 ├── examples/

@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 
 class QuantizeError(RuntimeError):
@@ -30,20 +31,29 @@ def ensure_quantized(
     quant_types: list[str],
     cache_dir: Path,
     quantize_bin: Path,
+    on_quant_start: Callable[[str], None] | None = None,
+    on_quant_done: Callable[[str], None] | None = None,
 ) -> dict[str, Path]:
     """Produce (or reuse cached) GGUF files for each requested quant type.
 
     Returns a dict mapping quant type -> path to the quantized .gguf file.
+    on_quant_start/on_quant_done let callers (e.g. the --serve live
+    dashboard) track progress without this module knowing anything about it.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, Path] = {}
 
     for quant in quant_types:
+        if on_quant_start:
+            on_quant_start(quant)
+
         stem = base_model.stem
         target = cache_dir / f"{stem}-{quant}.gguf"
 
         if target.exists() and target.stat().st_size > 0:
             out[quant] = target
+            if on_quant_done:
+                on_quant_done(quant)
             continue
 
         cmd = [str(quantize_bin), str(base_model), str(target), quant]
@@ -55,5 +65,7 @@ def ensure_quantized(
                 f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
             )
         out[quant] = target
+        if on_quant_done:
+            on_quant_done(quant)
 
     return out
