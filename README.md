@@ -22,6 +22,7 @@ The same sweep-and-recommend approach generalizes to on-device Arm CPUs (mobile/
 Running `armtune sweep` on an Arm64 target produces, in `results/`:
 
 - `report.md` — human-readable comparison table of every config tested, recommended winners (fastest throughput, lowest TTFT, best size/speed trade-off, and best config per quant level), and a baseline-vs-tuned comparison against the config an untuned deploy would likely land on (full thread count, least-compressed quant, largest batch tested).
+- `report.html` — the same data as a self-contained, chartable page: throughput vs. thread count per quant, baseline-vs-tuned bars, a sortable full-results table, and (if run) the concurrency and cost charts. No dependencies, no CDN — open it straight in a browser.
 - `results.csv` — the same data, flat, for spreadsheets or further analysis.
 - `results_raw.json` — raw `llama-bench` output for every test point.
 - `recommended_launch.sh` — a ready-to-run `llama-server` command using the winning config.
@@ -98,7 +99,7 @@ armtune sweep --mock --quants Q4_0,Q4_K_M,Q8_0 --threads 2,4,8 --batch 512,2048
 
 ```
 armtune/
-├── armtune/                # CLI package (quantize, bench, report, hfmodel, serve, performix wrapper)
+├── armtune/                # CLI package (quantize, bench, report, htmlreport, hfmodel, serve, performix wrapper)
 ├── scripts/
 │   └── setup_graviton.sh   # Arm64 host bootstrap (deps, llama.cpp build, venv)
 ├── examples/

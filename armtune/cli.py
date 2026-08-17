@@ -206,7 +206,11 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 print(f"[armtune] concurrency benchmark skipped: {e}", file=sys.stderr)
         if conc_results:
             report.append_concurrency(args.out_dir, conc_results)
-            print(f"[armtune] concurrency results appended to {paths['markdown']}")
+            report.write_html_report(
+                args.out_dir, results, winners, model_label, cpu_label,
+                cost_per_hour=args.instance_cost_per_hour, concurrency_results=conc_results,
+            )
+            print(f"[armtune] concurrency results appended to {paths['markdown']} and {paths['html']}")
 
     w = winners["fastest_throughput"]
     b = winners["baseline"]
@@ -218,6 +222,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         print(f"vs. untuned baseline ({b.quant}, {b.threads} threads, batch {b.batch}): "
               f"{speedup_pct:.1f}% faster generation throughput")
     print(f"Report:  {paths['markdown']}")
+    print(f"HTML:    {paths['html']}")
     print(f"CSV:     {paths['csv']}")
     print(f"Launch:  {paths['launch_script']}")
     return 0

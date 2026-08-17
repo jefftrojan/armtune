@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from armtune import bench, report, serve
+from armtune import bench, htmlreport, report, serve
 
 
 class TestMockGeneration(unittest.TestCase):
@@ -115,7 +115,7 @@ class TestMergeAndRank(unittest.TestCase):
             paths = report.write_artifacts(
                 self.rows, results, winners, Path(tmp), "test-model", "test-cpu"
             )
-            for key in ("raw_json", "csv", "markdown", "launch_script"):
+            for key in ("raw_json", "csv", "markdown", "html", "launch_script"):
                 self.assertTrue(paths[key].exists(), f"missing artifact: {key}")
             md = paths["markdown"].read_text()
             self.assertIn("SYNTHETIC DEMO DATA", md)
@@ -126,6 +126,10 @@ class TestMergeAndRank(unittest.TestCase):
             launch = paths["launch_script"].read_text()
             self.assertIn(winner.model_path, launch)
             self.assertNotIn("<your-model>", launch)
+
+            html = paths["html"].read_text()
+            self.assertIn("<svg", html)
+            self.assertIn("SYNTHETIC DEMO DATA", html)
 
     def test_write_artifacts_includes_cost_when_given(self):
         import tempfile
@@ -139,6 +143,53 @@ class TestMergeAndRank(unittest.TestCase):
             md = paths["markdown"].read_text()
             self.assertIn("$/1M tok", md)
             self.assertIn("cheaper", md)
+
+
+class TestHtmlReport(unittest.TestCase):
+    def setUp(self):
+        self.rows = bench.generate_mock_results(
+            quant_types=["Q4_0", "Q8_0"], threads=[2, 4], batch_sizes=[512],
+            n_prompt=512, n_gen=128,
+        )
+        self.results = report.merge_rows(self.rows)
+        self.winners = report.pick_winners(self.results)
+
+    def test_render_is_valid_html_with_no_nan_or_infinity(self):
+        html = htmlreport.render_html_report(self.results, self.winners, "test-model", "test-cpu")
+        self.assertIn("<html", html)
+        self.assertIn("</html>", html)
+        self.assertNotIn("NaN", html)
+        self.assertNotIn("Infinity", html)
+
+    def test_render_includes_one_line_per_quant(self):
+        html = htmlreport.render_html_report(self.results, self.winners, "test-model", "test-cpu")
+        self.assertIn(">Q4_0<", html)
+        self.assertIn(">Q8_0<", html)
+
+    def test_render_includes_cost_chart_only_when_given(self):
+        without_cost = htmlreport.render_html_report(self.results, self.winners, "test-model", "test-cpu")
+        with_cost = htmlreport.render_html_report(
+            self.results, self.winners, "test-model", "test-cpu", cost_per_hour=0.0672,
+        )
+        self.assertNotIn("$ per 1M generated tokens", without_cost)
+        self.assertIn("$ per 1M generated tokens", with_cost)
+
+    def test_render_includes_concurrency_section_only_when_given(self):
+        without = htmlreport.render_html_report(self.results, self.winners, "test-model", "test-cpu")
+        conc = serve.generate_mock_concurrency([1, 4], single_stream_tok_s=40.0)
+        with_conc = htmlreport.render_html_report(
+            self.results, self.winners, "test-model", "test-cpu", concurrency_results=conc,
+        )
+        self.assertNotIn("Concurrent serving throughput", without)
+        self.assertIn("Concurrent serving throughput", with_conc)
+
+    def test_bar_chart_handles_empty_input(self):
+        self.assertIn("No data", htmlreport._svg_bar_chart([], title="t", y_label="y"))
+
+    def test_line_chart_handles_single_point_without_division_by_zero(self):
+        svg = htmlreport._svg_line_chart({"Q4_0": [(4, 30.0)]}, title="t", x_label="x", y_label="y")
+        self.assertIn("<svg", svg)
+        self.assertNotIn("NaN", svg)
 
 
 class TestMockConcurrency(unittest.TestCase):

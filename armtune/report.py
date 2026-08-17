@@ -102,6 +102,27 @@ def pick_winners(results: list[ConfigResult]) -> dict[str, ConfigResult]:
     }
 
 
+def write_html_report(
+    out_dir: Path,
+    results: list[ConfigResult],
+    winners: dict[str, ConfigResult],
+    model_label: str,
+    cpu_label: str,
+    cost_per_hour: float | None = None,
+    concurrency_results: list[dict] | None = None,
+) -> Path:
+    """Writes (or overwrites) report.html. Imported lazily to avoid a
+    report<->htmlreport circular import, since htmlreport reuses ConfigResult
+    and cost_per_1m_tokens from this module."""
+    from .htmlreport import render_html_report
+
+    html_path = out_dir / "report.html"
+    html_path.write_text(
+        render_html_report(results, winners, model_label, cpu_label, cost_per_hour, concurrency_results)
+    )
+    return html_path
+
+
 def render_concurrency_section(results: list[dict]) -> str:
     lines = ["\n## Concurrent serving throughput\n"]
     lines.append(
@@ -173,6 +194,8 @@ def write_artifacts(
     md_path = out_dir / "report.md"
     md_path.write_text(_render_markdown(results, winners, model_label, cpu_label, cost_per_hour))
     paths["markdown"] = md_path
+
+    paths["html"] = write_html_report(out_dir, results, winners, model_label, cpu_label, cost_per_hour)
 
     winner = winners["fastest_throughput"]
     model_arg = winner.model_path or f"models/<your-model>-{winner.quant}.gguf"
