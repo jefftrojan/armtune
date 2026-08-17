@@ -21,13 +21,19 @@ on:
           install; do that locally instead.
         default: "qwen2.5-0.5b-instruct-fp16.gguf"
         required: false
+      concurrency:
+        description: >-
+          Comma-separated concurrent-request counts to test against the
+          winning config via llama-server (e.g. 1,4,8). Leave as-is to skip.
+        default: "1,4,8"
+        required: false
   push:
     branches: [main]
 
 jobs:
   sweep:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +90,7 @@ jobs:
             --n-prompt 256 \
             --n-gen 64 \
             --repetitions 2 \
+            --concurrency "${{ inputs.concurrency || '1,4,8' }}" \
             --out-dir results
 
       - name: Publish report to job summary
